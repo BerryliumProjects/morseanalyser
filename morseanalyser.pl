@@ -1,4 +1,4 @@
-    use Audio::DSP;
+#    use Audio::DSP;
 
     if ($ARGV[0] > 4) {
         $targetwpm = $ARGV[0];
@@ -9,49 +9,71 @@
     if ($ARGV[1] > 1) {
         $seconds = $ARGV[1];
     } else {
-        $seconds = 10;
+        $seconds = 30;
     }
 
+    $samplingrate = 8000;
+    $startdelay = 3; # seconds
+    $startdelaysamples = $startdelay * $samplingrate;
 
     $histogramwidth = 10;
     $targetdit = int(1200 / $targetwpm);
     $maxdit = $targetdit * 2;
     $maxchargap = $targetdit * 5.5;
-    print "Using $targetwpm wpm, dit is $targetdit ms. Splitting at $maxdit and $maxchargap ms. Sample duration $seconds s\n";
+    print "Using $targetwpm wpm, dit is $targetdit ms. Splitting at $maxdit and $maxchargap ms. Sampling starts after ${startdelay}s for ${seconds}s, or Ctrl+C when done\n";
+
+    $samplefile = '/var/tmp/morseanalyser.raw';
+    system qq{arecord -t raw -f U8 -r $samplingrate -d $seconds $samplefile};
 
 
-#    ($buf, $chan, $fmt, $rate) = (4096, 1, AFMT_S8, 8192);
-    ($buf, $chan, $fmt, $rate) = (4096, 1, AFMT_S16_LE, 8192);
+    open (AU, $samplefile) or
+       die "Can't find $samplefile";
 
-    $dsp = new Audio::DSP(buffer   => $buf,
-                          channels => $chan,
-                          format   => $fmt,
-                          rate     => $rate);
+    binmode(AU);
+    seek(AU, $startdelaysamples, 0); # ignore initial settling period
+
+    if (eof(AU)) {
+       die "Sample is shorter than start delay\n";
+    }
+
+    $/ = undef;    
+
+    $rawaudio = <AU>; # whole file
+
+    close(AU);
+
+    $/ = "\n";
+
+#    ($buf, $chan, $fmt, $rate) = (4096, 1, AFMT_U8, 8000);
+
+#    $dsp = new Audio::DSP(buffer   => $buf,
+#                          channels => $chan,
+#                          format   => $fmt,
+#                          rate     => $rate);
 
     # change 16 to 8 to use AFMT_S8;
 
-    $length  = ($chan * 16 * $rate * $seconds) / 8;
-    $flushlength  = ($chan * 16 * $rate * 1) / 8;
+#    $length  = ($chan * 16 * $rate * $seconds) / 8;
+#    $flushlength  = ($chan * 16 * $rate * 1) / 8;
 
-    $dsp->init(mode => O_RDONLY) || die $dsp->errstr();
+#    $dsp->init(mode => O_RDONLY) || die $dsp->errstr();
 
-    # Ignore initial transient
-    for (my $i = 0; $i < $flushlength; $i += $buf) {
-        $dsp->read() || die $dsp->errstr();
-    }
+#    # Ignore initial transient
+#    for (my $i = 0; $i < $flushlength; $i += $buf) {
+#        $dsp->read() || die $dsp->errstr();
+#    }
 
-    $dsp->clear();
-    print "Ready\n";
+#    $dsp->clear();
 
-    # Record 5 seconds of sound
-    for (my $i = 0; $i < $length; $i += $buf) {
-        $dsp->read() || die $dsp->errstr();
-    }
-    $rawaudio = $dsp->data();
-    $dsp->close();
+#    # Record 5 seconds of sound
+#    for (my $i = 0; $i < $length; $i += $buf) {
+#        $dsp->read() || die $dsp->errstr();
+#    }
+#    $rawaudio = $dsp->data();
+#    $dsp->close();
 
 
-    @datavalues = unpack('c*', $rawaudio);
+    @datavalues = unpack('C*', $rawaudio);
 
     # apply filter to remove low frequencies
 
@@ -97,7 +119,7 @@
             if ($waitingtostart ) {
                 $waitingtostart = 0;
             } else {
-                $msdtime = int($markspaceduration * 1024 / $rate);
+                $msdtime = int($markspaceduration * 1024 / $samplingrate);
 #                print "space duration = $msdtime\n";
  
                 if ($msdtime < $maxdit) {
@@ -116,7 +138,7 @@
             and $markspaceduration > $msdurthreshold) {
 	    $mark = 0;
            
-            $msdtime = int($markspaceduration * 1024 / $rate);
+            $msdtime = int($markspaceduration * 1024 / $samplingrate);
 #            print "mark duration = $msdtime\n";
 
             if ($msdtime < $maxdit) {
@@ -177,9 +199,9 @@
 
 #   foreach (@filtered1) { printf('%i8',$_);}
 
-    open (RAWFILE, ">./dsptest.au");
-    print RAWFILE $rawaudio;
-    close (RAWFILE);
+#    open (RAWFILE, ">./dsptest.au");
+#    print RAWFILE $rawaudio;
+#    close (RAWFILE);
 
     while(1) {
         print "Enter P to play sample, else quit:\n";
@@ -188,20 +210,29 @@
         last unless uc($action) eq 'P';
 
         # Play it back
-        $dsp = new Audio::DSP(buffer   => $buf,
-                          channels => $chan,
-                          format   => $fmt,
-                          rate     => $rate);
 
+        open (AU2, "| aplay -t raw -f U8 -r $samplingrate") or
+           die "Could not pipe data to aplay\n";
+         
+        binmode(AU2);
+        print AU2 $rawaudio;
+        close(AU2);
 
-        $dsp->init(mode => O_WRONLY) || die $dsp->errstr();
-        $dsp->datacat($rawaudio);
-        print "Buffer length: ",$dsp->datalen(), "\n";
-        for (;;) {
-            $dsp->write() || last;
-        }
-
-        $dsp->close();
+#        system qq{aplay -t raw -f U8 -r $samplingrate $samplefile}
+#        $dsp = new Audio::DSP(buffer   => $buf,
+#                          channels => $chan,
+#                          format   => $fmt,
+#                          rate     => $rate);
+#
+#
+#        $dsp->init(mode => O_WRONLY) || die $dsp->errstr();
+#        $dsp->datacat($rawaudio);
+#        print "Buffer length: ",$dsp->datalen(), "\n";
+#        for (;;) {
+#            $dsp->write() || last;
+#        }
+#
+#        $dsp->close();
     }
 
 #print "@datavalues";
