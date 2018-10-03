@@ -1,3 +1,5 @@
+#! /usr/bin/perl
+
 #    use Audio::DSP;
 
     if ($ARGV[0] > 4) {
