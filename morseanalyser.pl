@@ -1,32 +1,54 @@
 #! /usr/bin/perl
 
-#    use Audio::DSP;
+if ($ARGV[0] > 4) {
+    $targetwpm = $ARGV[0];
+} else {
+    $targetwpm = 15;
+}
 
-    if ($ARGV[0] > 4) {
-        $targetwpm = $ARGV[0];
-    } else {
-        $targetwpm = 15;
-    }
+if ($ARGV[1] > 1) {
+    $seconds = $ARGV[1];
+} else {
+    $seconds = 30;
+}
 
-    if ($ARGV[1] > 1) {
-        $seconds = $ARGV[1];
-    } else {
-        $seconds = 30;
-    }
+$samplingrate = 8000; # should be a multiple of 1000
+$startdelay = 3; # seconds
+$startdelaysamples = $startdelay * $samplingrate;
 
-    $samplingrate = 8000;
-    $startdelay = 3; # seconds
-    $startdelaysamples = $startdelay * $samplingrate;
+@intensity = ();
 
-    $histogramwidth = 10;
-    $targetdit = int(1200 / $targetwpm);
-    $maxdit = $targetdit * 2;
-    $maxchargap = $targetdit * 5.5;
-    print "Using $targetwpm wpm, dit is $targetdit ms. Splitting at $maxdit and $maxchargap ms. Sampling starts after ${startdelay}s for ${seconds}s, or Ctrl+C when done\n";
+%histogram; # hash of arrays
+$histogramwidth = 10;
+$targetdit = int(1200 / $targetwpm);
+$maxdit = $targetdit * 2;
+$maxchargap = $targetdit * 5.5;
+
+print "Using $targetwpm wpm, dit is $targetdit ms. Splitting at $maxdit and $maxchargap ms.\n";
+
+CollectSample();
+DetectIntensity(); # get tone intensity each millisecond
+
+print "@intensity\n"; ##diagnostics
+
+
+RecogniseElements();
+
+# show histogram stats
+
+$meandot = ReportHistogram('Dot');
+$meandash = ReportHistogram('Dash');
+$meanegap = ReportHistogram('Element Gap');
+$meancgap = ReportHistogram('Character Gap');
+$meanwgap = ReportHistogram('Word Gap');
+SummarizeSample();
+ReplaySample();
+
+sub CollectSample {
+    print "Sampling starts after ${startdelay}s for ${seconds}s, until Ctrl+C\n";
 
     $samplefile = '/var/tmp/morseanalyser.raw';
-    system qq{arecord -t raw -f U8 -r $samplingrate -d $seconds $samplefile};
-
+#    system qq{arecord -t raw -f U8 -r $samplingrate -d $seconds $samplefile};  # commented out for diagnostics
 
     open (AU, $samplefile) or
        die "Can't find $samplefile";
@@ -46,58 +68,16 @@
 
     $/ = "\n";
 
-#    ($buf, $chan, $fmt, $rate) = (4096, 1, AFMT_U8, 8000);
-
-#    $dsp = new Audio::DSP(buffer   => $buf,
-#                          channels => $chan,
-#                          format   => $fmt,
-#                          rate     => $rate);
-
-    # change 16 to 8 to use AFMT_S8;
-
-#    $length  = ($chan * 16 * $rate * $seconds) / 8;
-#    $flushlength  = ($chan * 16 * $rate * 1) / 8;
-
-#    $dsp->init(mode => O_RDONLY) || die $dsp->errstr();
-
-#    # Ignore initial transient
-#    for (my $i = 0; $i < $flushlength; $i += $buf) {
-#        $dsp->read() || die $dsp->errstr();
-#    }
-
-#    $dsp->clear();
-
-#    # Record 5 seconds of sound
-#    for (my $i = 0; $i < $length; $i += $buf) {
-#        $dsp->read() || die $dsp->errstr();
-#    }
-#    $rawaudio = $dsp->data();
-#    $dsp->close();
-
-
     @datavalues = unpack('C*', $rawaudio);
+}
 
-    # apply filter to remove low frequencies
-
-    @filtered1 = ();
+sub DetectIntensity {
     $runningsum = 0;
-
     $runninglength = 8;
     $intensitylength = 8;
     $newintensityweight = 1 / $intensitylength;
     $accintensityweight = 1 - $newintensityweight;
-
-    $markspaceduration = 0;
-    $mark = 0;
-    $markthreshold = 7; # initial value, suitable for peak intensity 10
-    $spacethreshold = $markthreshold / 2.0;
-    $msdurmax = 8000;
-    $peaksmoothedintensity = 0;
-    $msdurthreshold = 160; # 20 ms
-    $waitingtostart = 1;
-
-    %histogram; # hash of arrays
-
+    $samplespermillisecond = int($samplingrate / 1000 + 0.5);
 
     foreach $i (0 .. $runninglength - 1) {
 	$runningsum += $datavalues[$i];
@@ -105,15 +85,38 @@
 
     foreach $i ($runninglength .. @datavalues - 1) {
         $data1 = $datavalues[$i] - int($runningsum / $runninglength);
-        push (@filtered1, $datavalues[$i] - $runningsum);
         $runningsum += ($datavalues[$i] - $datavalues[$i - $runninglength]);
-# print $data1, "\n";    
         $intensity = ($data1 > 0 ? $data1 : -$data1);
 
         $smoothedintensity = $smoothedintensity * $accintensityweight + 
             $intensity * $newintensityweight;
 
-        if ($smoothedintensity > $markthreshold
+        if (($i + 1) % $samplespermillisecond == 0) { # if final sample in millisecond
+            push(@intensity, int(0.5+$smoothedintensity));
+        }
+    }
+} 
+
+sub RecogniseElements {
+    $waitingtostart = 1;
+    $msdurthreshold = 20; # 20 ms
+    $markspaceduration = 0;
+    $mark = 0;
+    $peaksmoothedintensity = 0;
+
+    foreach $i (0 .. @intensity - 1) {
+        if ($intensity[$i] > $peaksmoothedintensity) {
+            $peaksmoothedintensity = $intensity[$i];
+        }
+    }
+ 
+    print "Peak smoothed intensity  = $peaksmoothedintensity\n";
+
+    foreach $i (0 .. @intensity - 1) {
+        # normalise intensity to a scale 0 .. 3
+        $relativeintensity = $intensity[$i] * 3.0 / $peaksmoothedintensity;
+
+        if ($relativeintensity > 2.0
             and not $mark
             and $markspaceduration > $msdurthreshold) {
             $mark = 1;
@@ -121,60 +124,37 @@
             if ($waitingtostart ) {
                 $waitingtostart = 0;
             } else {
-                $msdtime = int($markspaceduration * 1024 / $samplingrate);
-#                print "space duration = $msdtime\n";
- 
-                if ($msdtime < $maxdit) {
-                    BuildHistogram('Element Gap', $msdtime);
-                } elsif ($msdtime < $maxchargap) {
-                    BuildHistogram('Character Gap', $msdtime);
+                if ($markspaceduration < $maxdit) {
+                    BuildHistogram('Element Gap', $markspaceduration);
+                } elsif ($markspaceduration < $maxchargap) {
+                    BuildHistogram('Character Gap', $markspaceduration);
                 } else {
-                    BuildHistogram('Word Gap', $msdtime); 
+                    BuildHistogram('Word Gap', $markspaceduration); 
                 }
-
             }
 
             $markspaceduration = 0;
-        } elsif ($smoothedintensity < $spacethreshold
+        } elsif ($relativeintensity < 1.0
             and $mark
             and $markspaceduration > $msdurthreshold) {
 	    $mark = 0;
-           
-            $msdtime = int($markspaceduration * 1024 / $samplingrate);
-#            print "mark duration = $msdtime\n";
 
-            if ($msdtime < $maxdit) {
-                BuildHistogram('Dot', $msdtime);
+            if ($markspaceduration < $maxdit) {
+                BuildHistogram('Dot', $markspaceduration);
             } else {
-                BuildHistogram('Dash', $msdtime);
+                BuildHistogram('Dash', $markspaceduration);
             }
 
             $markspaceduration = 0;
-            # recalibrate mark/space intensity edge levels
-            $markthreshold = $peaksmoothedintensity * 2.0/3;
-            $spacethreshold = $markthreshold / 2.0;
         } else {
-            if ($markspaceduration < $msdurmax) {
+            if ($markspaceduration < 1000) { # sensible limit of 1 second
                 $markspaceduration++;
             }
-           
-            if ($mark and $smoothedintensity > $peaksmoothedintensity) {
-                $peaksmoothedintensity = $smoothedintensity;
-            }
         }
-# print $intensity , ",", $smoothedintensity , "\n";
     }
+}
 
-
-    print "Final peak smoothed intensity  = $peaksmoothedintensity\n";
-
-# show histogram stats
-
-    $meandot = ReportHistogram('Dot');
-    $meandash = ReportHistogram('Dash');
-    $meanegap = ReportHistogram('Element Gap');
-    $meancgap = ReportHistogram('Character Gap');
-    $meanwgap = ReportHistogram('Word Gap');
+sub SummarizeSample {
 
     if (defined $meandot and defined $meanegap) {
        $meanpulse = ($meandot + $meanegap) / 2;
@@ -198,13 +178,9 @@
        }
 
     }
+}
 
-#   foreach (@filtered1) { printf('%i8',$_);}
-
-#    open (RAWFILE, ">./dsptest.au");
-#    print RAWFILE $rawaudio;
-#    close (RAWFILE);
-
+sub ReplaySample {
     while(1) {
         print "Enter P to play sample, else quit:\n";
         $action = <STDIN>;
@@ -219,25 +195,10 @@
         binmode(AU2);
         print AU2 $rawaudio;
         close(AU2);
+   }
 
-#        system qq{aplay -t raw -f U8 -r $samplingrate $samplefile}
-#        $dsp = new Audio::DSP(buffer   => $buf,
-#                          channels => $chan,
-#                          format   => $fmt,
-#                          rate     => $rate);
-#
-#
-#        $dsp->init(mode => O_WRONLY) || die $dsp->errstr();
-#        $dsp->datacat($rawaudio);
-#        print "Buffer length: ",$dsp->datalen(), "\n";
-#        for (;;) {
-#            $dsp->write() || last;
-#        }
-#
-#        $dsp->close();
-    }
-
-#print "@datavalues";
+   #print "@datavalues"; #diagnostics
+}
 
 sub BuildHistogram {
    my $type = shift;
