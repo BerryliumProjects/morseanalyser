@@ -1,15 +1,18 @@
 #! /usr/bin/perl
 
+# parameter default values
+$targetwpm = 15;
+$amplefile = undef;
+$seconds = 30;
+
 if ($ARGV[0] > 4) {
     $targetwpm = $ARGV[0];
-} else {
-    $targetwpm = 15;
 }
 
-if ($ARGV[1] > 1) {
-    $seconds = $ARGV[1];
-} else {
-    $seconds = 30;
+if ($ARGV[1] > 5) {
+   $seconds = $ARGV[1];
+} elsif (-f $ARGV[1]) {
+   $samplefile = $ARGV[1];
 }
 
 $samplingrate = 8000; # should be a multiple of 1000
@@ -29,8 +32,7 @@ print "Using $targetwpm wpm, dit is $targetdit ms. Splitting at $maxdit and $max
 CollectSample();
 DetectIntensity(); # get tone intensity each millisecond
 
-print "@intensity\n"; ##diagnostics
-
+# print "@intensity\n"; ##diagnostics
 
 RecogniseElements();
 
@@ -45,19 +47,20 @@ SummarizeSample();
 ReplaySample();
 
 sub CollectSample {
-    print "Sampling starts after ${startdelay}s for ${seconds}s, until Ctrl+C\n";
-
-    $samplefile = '/var/tmp/morseanalyser.raw';
-#    system qq{arecord -t raw -f U8 -r $samplingrate -d $seconds $samplefile};  # commented out for diagnostics
+    unless (defined $samplefile) {
+        $samplefile = '/var/tmp/morseanalyser.raw';
+        print "Sampling starts after ${startdelay}s for ${seconds}s, or until Ctrl+C\n";
+        system qq{arecord -t raw -f U8 -r $samplingrate -d $seconds $samplefile};
+    }
 
     open (AU, $samplefile) or
-       die "Can't find $samplefile";
+        die "Can't find $samplefile";
 
     binmode(AU);
     seek(AU, $startdelaysamples, 0); # ignore initial settling period
 
     if (eof(AU)) {
-       die "Sample is shorter than start delay\n";
+        die "Sample is shorter than start delay\n";
     }
 
     $/ = undef;    
