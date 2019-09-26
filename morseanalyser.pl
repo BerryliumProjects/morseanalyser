@@ -32,7 +32,7 @@ print "Using $targetwpm wpm, dit is $targetdit ms. Splitting at $maxdit and $max
 CollectSample();
 DetectIntensity(); # get tone intensity each millisecond
 
-# print "@intensity\n"; ##diagnostics
+print "@intensity\n"; 
 
 RecogniseElements();
 
@@ -75,9 +75,11 @@ sub CollectSample {
 }
 
 sub DetectIntensity {
+    $tonefrequency = 1000;
     $runningsum = 0;
-    $runninglength = 8;
-    $intensitylength = 8;
+    $runninglength = int(0.5 + $samplingrate / $tonefrequency * 2);
+    $smoothingtimems = 5;
+    $intensitylength = $samplingrate / 1000 * $smoothingtimems;
     $newintensityweight = 1 / $intensitylength;
     $accintensityweight = 1 - $newintensityweight;
     $samplespermillisecond = int($samplingrate / 1000 + 0.5);
@@ -101,23 +103,33 @@ sub DetectIntensity {
 } 
 
 sub RecogniseElements {
+    $noisefloor = 2;
     $waitingtostart = 1;
     $msdurthreshold = 20; # 20 ms
     $markspaceduration = 0;
     $mark = 0;
-    $peaksmoothedintensity = 0;
+    $cumulativemarkintensity = 0;
+    $averagemarkintensity = 0;
+    $markcount = 0;
 
     foreach $i (0 .. @intensity - 1) {
-        if ($intensity[$i] > $peaksmoothedintensity) {
-            $peaksmoothedintensity = $intensity[$i];
+        if ($intensity[$i] > $noisefloor) {
+            $cumulativemarkintensity += $intensity[$i];
+            $markcount ++;
         }
     }
  
-    print "Peak smoothed intensity  = $peaksmoothedintensity\n";
+    if ($markcount > 0) {
+       $averagemarkintensity = $cumulativemarkintensity / $markcount;
+    } else {
+       die "No marks detected in sample";
+    }
+
+    print "Average mark intensity  = $averagemarkintensity\n";
 
     foreach $i (0 .. @intensity - 1) {
         # normalise intensity to a scale 0 .. 3
-        $relativeintensity = $intensity[$i] * 3.0 / $peaksmoothedintensity;
+        $relativeintensity = $intensity[$i] * 3.0 / $averagemarkintensity;
 
         if ($relativeintensity > 2.0
             and not $mark
@@ -154,6 +166,8 @@ sub RecogniseElements {
                 $markspaceduration++;
             }
         }
+
+        # print "$mark "; #diagnostics
     }
 }
 
